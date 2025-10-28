@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>ROS WebSocket 控制与图像接收</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    input[type="text"] { width: 340px; padding: 6px 8px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    #status { font-weight: 600; }
+    #log { height: 160px; overflow: auto; border: 1px solid #ccc; padding: 8px; white-space: pre-wrap; background: #fafafa;}
+    #video { width: 100%; max-width: 960px; background: #000; }
+    .pad { display: grid; grid-template-columns: 60px 60px 60px; gap: 6px; }
+    .pad button { height: 42px; }
+    .muted { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>ROS WebSocket 客户端（图像接收 + 方向控制）</h2>
+
+  <div class="row">
+    <label for="wsUrl">WebSocket URL：</label>
+    <input id="wsUrl" type="text" value="ws://localhost:8765" />
+    <button id="btnConnect">连接</button>
+    <button id="btnDisconnect" disabled>断开</button>
+    <span id="status">未连接</span>
+  </div>
+
+  <div class="row">
+    <div class="pad">
+      <span></span>
+      <button↑ 上</button>
+      <span></span>
+
+      left← 左</button>
+      <button data-action="stop"utton data-action="    <span></span>
+      <button data-action="backwardpan></span>
+    </div>
+    <div class="muted">
+      键盘快捷键：↑（forward）、↓（backward）、←（left）、→（right）、空格（stop）
+    </div>
+  </div>
+
+  <div class="row">
+    <img id="video" alt="等待视频帧…" />
+  </div>
+
+  <div class="row">
+    <div>
+      <div><strong>日志</strong></div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
+    let lastObjectUrl = null;
+
+    const wsUrlInput = document.getElementById('wsUrl');
+    const btnConnect  = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const imgEl = document.getElementById('video');
+
+    // 允许通过 URL 参数 ?ws=ws://ip:port 直接注入
+    (function initByQuery() {
+      const u = new URL(location.href);
+      const wsParam = u.searchParams.get('ws');
+      if (wsParam) wsUrlInput.value = wsParam;
+    })();
+
+    function log(msg) {
+      const ts = new Date().toLocaleTimeString();
+      logEl.textContent += `[${ts}] ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(msg);
+    }
+
+    function setStatus(text, color = 'black') {
+      statusEl.textContent = text;
+      statusEl.style.color = color;
+    }
+
+    function cleanupImageUrl() {
+      if (lastObjectUrl) {
+        URL.revokeObjectURL(lastObjectUrl);
+        lastObjectUrl = null;
+      }
+    }
+
+    function connect(url) {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        log('已有连接或正在连接中。');
+        return;
+      }
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        log(`创建 WebSocket 失败：${e}`);
+        return;
+      }
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        setStatus('已连接', 'green');
+        log(`✅ Connected: ${url}`);
+        btnConnect.disabled = true;
+        btnDisconnect.disabled = false;
+        reconnectAttempts = 0;
+        // 可选：发送一次 hello
+        // ws.send('hello');
+      };
+
+      ws.onmessage = (ev) => {
+        // 服务端广播的应为 JPEG 二进制；若收到文本，可按需处理
+        if (typeof ev.data === 'string') {
+          log(`收到文本: ${ev.data}`);
+          return;
+        }
+        if (ev.data instanceof ArrayBuffer) {
+          const blob = new Blob([ev.data], { type: 'image/jpeg' });
+          const objUrl = URL.createObjectURL(blob);
+          cleanupImageUrl();
+          lastObjectUrl = objUrl;
+          imgEl.onload = () => {
+            // 图片解码后再释放上一个 URL，避免花屏
+            // （注意：当前 objUrl 不能立即 revoke，否则图像还未解码）
+          };
+          imgEl.src = objUrl;
+        } else if (ev.data instanceof Blob) {
+          // 某些浏览器可能直接就是 Blob
+          const objUrl = URL.createObjectURL(ev.data);
+          cleanupImageUrl();
+          lastObjectUrl = objUrl;
+          imgEl.src = objUrl;
+        }
+      };
+
+      ws.onerror = (err) => {
+        log(`❌ Socket error: ${err?.message || err}`);
+      };
+
+      ws.onclose = (ev) => {
+        setStatus(`已断开（code=${ev.code} reason=${ev.reason || 'n/a'}）`, 'red');
+        log(`🔌 Disconnected. code=${ev.code} reason=${ev.reason || 'n/a'}`);
+        btnConnect.disabled = false;
+        btnDisconnect.disabled = true;
+        cleanupImageUrl();
+        imgEl.removeAttribute('src');
+        scheduleReconnect(url);
+      };
+    }
+
+    function scheduleReconnect(url) {
+      if (reconnectTimer) return;
+      // 简单的指数退避：1s, 2s, 4s, … 最大 30s
+      const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts++));
+      log(`将在 ${Math.round(delay/1000)}s 后尝试重连…`);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect(url);
+      }, delay);
+    }
+
+    function disconnect() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (ws) {
+        const s = ws.readyState;
+        try { ws.close(1000, 'client close'); } catch {}
+        if (s === WebSocket.CLOSED) {
+          setStatus('已断开', 'red');
+          btnConnect.disabled = false;
+          btnDisconnect.disabled = true;
+        }
+      }
+    }
+
+    function sendAction(action) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log('尚未连接，无法发送指令。');
+        return;
+      }
+      const payload = { action };
+      try {
+        ws.send(JSON.stringify(payload));
+        log(`➡ 发送: ${JSON.stringify(payload)}`);
+      } catch (e) {
+        log(`发送失败: ${e}`);
+      }
+    }
+
+    // 绑定按钮
+    btnConnect.addEventListener('click', () => connect(wsUrlInput.value.trim()));
+    btnDisconnect.addEventListener('click', () => disconnect());
+
+    // 方向/停止按钮
+    document.querySelectorAll('button[data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-action');
+        sendAction(action);
+      });
+    });
+
+    // 键盘快捷键
+    window.addEventListener('keydown', (ev) => {
+      switch (ev.key) {
+        case 'ArrowUp':    ev.preventDefault(); return sendAction('forward');
+        case 'ArrowDown':  ev.preventDefault(); return sendAction('backward');
+        case 'ArrowLeft':  ev.preventDefault(); return sendAction('left');
+        case 'ArrowRight': ev.preventDefault(); return sendAction('right');
+        case ' ':          ev.preventDefault(); return sendAction('stop');
+      }
+    });
+
+    // 页面关闭时清理
+    window.addEventListener('beforeunload', () => {
+      try { disconnect(); } catch {}
+      cleanupImageUrl();
+    });
+  </script>
+</body>
+</html>
