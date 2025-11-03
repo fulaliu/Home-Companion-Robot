@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>USB Camera WebSocket Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Arial; margin: 20px; }
+    #frame { width: 640px; height: 480px; background: #222; object-fit: contain; }
+    .row { margin-top: 10px; }
+    #status { color: #0a0; font-weight: bold; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff; padding: 10px 14px; border-radius: 6px; display: none; }
+    #ocrBox { margin-top: 15px; padding: 10px; border: 1px solid #ccc; background: #f9f9f9; width: 640px; white-space: pre-wrap; font-size: 14px; }
+    #ocrBox h3 { margin: 0 0 8px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h2>USB Camera WebSocket Viewer</h2>
+  <div class="row">
+    <label>Server WS URL: <input id="wsurl" size="40" value="ws://127.0.0.1:8000/ws" /></label>
+    <label style="margin-left:12px;">Channel: <input id="channel" value="default" /></label>
+    <button id="connectBtn">连接</button>
+    <span id="status">未连接</span>
+  </div>
+  <div class="row">
+    <img id="frame" alt="video frame"/>
+  </div>
+  <div class="row">
+    <button id="confirmBtn" disabled>确认（保存当前帧）</button>
+    <button id="pingBtn" disabled>Ping</button>
+  </div>
+
+  <!-- 新增 OCR 结果显示区域 -->
+  <div id="ocrBox">
+    <h3>OCR 识别结果：</h3>
+    <div id="ocrResult">暂无结果</div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    let ws = null;
+    let lastFrameB64 = null;
+
+    const wsurl = document.getElementById('wsurl');
+    const channel = document.getElementById('channel');
+    const status = document.getElementById('status');
+    const frameImg = document.getElementById('frame');
+    const connectBtn = document.getElementById('connectBtn');
+    const confirmBtn = document.getElementById('confirmBtn');
+    const pingBtn = document.getElementById('pingBtn');
+    const toast = document.getElementById('toast');
+    const ocrResultDiv = document.getElementById('ocrResult');
+
+    function showToast(msg) {
+      toast.innerText = msg;
+      toast.style.display = 'block';
+      setTimeout(()=> toast.style.display = 'none', 2000);
+    }
+
+    connectBtn.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        return;
+      }
+      ws = new WebSocket(wsurl.value);
+      ws.onopen = () => {
+        status.innerText = '已连接';
+        confirmBtn.disabled = false;
+        pingBtn.disabled = false;
+        connectBtn.innerText = '断开';
+        ws.send(JSON.stringify({ type: 'join', role: 'viewer', channel: channel.value || 'default' }));
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === 'frame' && data.image_b64) {
+            lastFrameB64 = data.image_b64;
+            frameImg.src = 'data:image/jpeg;base64,' + data.image_b64;
+          } else if (data.type === 'ack') {
+            showToast(`已保存：${data.saved_path}`);
+            // 如果有 OCR 结果，显示到页面
+            if (data.ocr_results) {
+              ocrResultDiv.textContent = data.ocr_results;
+            }
+          } else if (data.type === 'pong') {
+            showToast('pong');
+          }
+        } catch (e) {
+          // 非 JSON 忽略
+        }
+      };
+      ws.onclose = () => {
+        status.innerText = '未连接';
+        confirmBtn.disabled = true;
+        pingBtn.disabled = true;
+        connectBtn.innerText = '连接';
+      };
+      ws.onerror = () => {
+        showToast('WS 连接错误');
+      };
+    };
+
+    confirmBtn.onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({
+        type: 'confirm',
+        channel: channel.value || 'default',
+        // 带上网页端当前帧，确保“所见即所得”
+        image_b64: lastFrameB64
+      }));
+    };
+
+    pingBtn.onclick = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'ping' }));
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>ROS WebSocket 双路视频 + 键盘控制</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 12px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+    input[type="text"] { width: 220px; padding: 6px 8px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    .status { font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+    .ok { color: #0a0; }
+    .ng { color: #a00; }
+    .muted { color: #666; font-size: 12px; }
+    .videos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+    figure { margin: 0; }
+    figcaption { font-size: 13px; color: #888; margin-top: 4px; }
+    .videos img { width: 100%; background: #000; aspect-ratio: 16/9; object-fit: contain; }
+    #log { height: 160px; overflow: auto; border: 1px solid #ccc; padding: 8px; white-space: pre-wrap; background: #f8f8f8; }
+    .pad { display: grid; grid-template-columns: 64px 64px 64px; grid-template-rows: 46px 46px 46px; gap: 6px; }
+    .pad button { height: 46px; }
+    .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .sep { width: 1px; height: 18px; background: #ccc; margin: 0 6px; }
+    code.k { background: #eee; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>ROS WebSocket 双路视频（cam0/cam1）+ 键盘控制</h2>
+
+  <div class="row">
+    <label for="ip">Robot IP：</label>
+    <input id="ip" type="text" placeholder="例如：192.168.1.42" />
+    <button id="btnConnect">连接</button>
+    <button id="btnDisconnect" disabled>断开</button>
+
+    <div class="right">
+      <span>cam0: <span id="stCam0" class="status ng">未连接</span></span>
+      <span class="sep"></span>
+      <span>cam1: <span id="stCam1" class="status ng">未连接</span></span>
+      <span class="sep"></span>
+      <span>控制: <span id="stCmd" class="status ng">未连接</span></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="pad">
+      <span></span>
+      <button id="btnUp">↑</button>
+      <span></span>
+
+      <button id="btnLeft">←</button>
+      <button id="btnStop">■</button>
+      <button id="btnRight">→</button>
+
+      <span></span>
+      <button id="btnDown">↓</button>
+      <span></span>
+    </div>
+    <div class="muted">
+      键盘快捷键：
+      <code class="k">↑</code> forward，
+      <code class="k">↓</code> backward，
+      <code class="k">←</code> left，
+      <code class="k">→</code> right，
+      <code class="k">Space</code> stop
+      <br />
+      也可发送自定义速度（示例：<code>{"linear":0.3,"angular":-0.2}</code>）
+      <div style="margin-top:6px;">
+        <button id="btnLinAng">发送线速度0.3/角速度-0.2</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="row videos">
+    <figure>
+      <img id="imgCam0" alt="cam0 等待视频…">
+      <figcaption>cam0（ws://&lt;ip&gt;:8765）</figcaption>
+    </figure>
+    <figure>
+      <img id="imgCam1" alt="cam1 等待视频…">
+      <figcaption>cam1（ws://&lt;ip&gt;:8766）</figcaption>
+    </figure>
+  </div>
+
+  <div class="row" style="align-items: stretch;">
+    <div style="flex:1;">
+      <div><strong>日志</strong></div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  /*** Elements ***/
+  const ipEl = document.getElementById('ip');
+  const stCam0 = document.getElementById('stCam0');
+  const stCam1 = document.getElementById('stCam1');
+  const stCmd  = document.getElementById('stCmd');
+  const btnConnect = document.getElementById('btnConnect');
+  const btnDisconnect = document.getElementById('btnDisconnect');
+  const imgCam0 = document.getElementById('imgCam0');
+  const imgCam1 = document.getElementById('imgCam1');
+  const logEl = document.getElementById('log');
+
+  const btnUp = document.getElementById('btnUp');
+  const btnDown = document.getElementById('btnDown');
+  const btnLeft = document.getElementById('btnLeft');
+  const btnRight = document.getElementById('btnRight');
+  const btnStop = document.getElementById('btnStop');
+  const btnLinAng = document.getElementById('btnLinAng');
+
+  /*** State ***/
+  let wsCam0 = null, wsCam1 = null, wsCmd = null;
+  let reconnectTimers = { cam0: null, cam1: null, cmd: null };
+  let lastUrl0 = null, lastUrl1 = null;
+  let connecting = false;
+
+  // Allow query param ?ip=1.2.3.4
+  (function initByQuery(){
+    const u = new URL(location.href);
+    const p = u.searchParams.get('ip');
+    if (p) ipEl.value = p;
+  })();
+
+  function log(msg) {
+    const ts = new Date().toLocaleTimeString();
+    logEl.textContent += `[${ts}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+    // console.log(msg);
+  }
+
+  function setStatus(el, ok, text) {
+    el.textContent = text || (ok ? '已连接' : '未连接');
+    el.classList.toggle('ok', !!ok);
+    el.classList.toggle('ng', !ok);
+  }
+
+  function revokeURL(which){
+    try {
+      if (which === 0 && lastUrl0) { URL.revokeObjectURL(lastUrl0); lastUrl0 = null; }
+      if (which === 1 && lastUrl1) { URL.revokeObjectURL(lastUrl1); lastUrl1 = null; }
+    } catch {}
+  }
+
+  function buildUrls(ip){
+    const base = `ws://${ip}`;
+    return {
+      cam0: `${base}:8765`,
+      cam1: `${base}:8766`,
+      cmd : `${base}:8888`
+    };
+  }
+
+  function scheduleReconnect(kind, fn, delayMs){
+    // simple debounce
+    if (reconnectTimers[kind]) return;
+    reconnectTimers[kind] = setTimeout(() => {
+      reconnectTimers[kind] = null;
+      fn();
+    }, delayMs);
+  }
+
+  /*** Video connections (binary JPEG) ***/
+  function connectCam(kind, url, imgEl, statusEl, revokeIdx){
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      log(`创建 ${kind} WebSocket 失败：${e}`);
+      return null;
+    }
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      setStatus(statusEl, true);
+      log(`✅ ${kind} connected: ${url}`);
+      // 绑定到全局
+      if (kind === 'cam0') wsCam0 = ws;
+      if (kind === 'cam1') wsCam1 = ws;
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        // 一般不会收到文本；如后端发了文本，则只记录
+        log(`${kind} 文本: ${ev.data}`);
+        return;
+      }
+      let blob;
+      if (ev.data instanceof ArrayBuffer) {
+        blob = new Blob([ev.data], { type: 'image/jpeg' });
+      } else if (ev.data instanceof Blob) {
+        blob = ev.data;
+      } else {
+        return;
+      }
+      const urlObj = URL.createObjectURL(blob);
+      if (revokeIdx === 0) {
+        revokeURL(0);
+        lastUrl0 = urlObj;
+      } else {
+        revokeURL(1);
+        lastUrl1 = urlObj;
+      }
+      // 设置 src 时不用 revoke 当前 url，避免还未解码导致花屏
+      imgEl.src = urlObj;
+    };
+
+    ws.onerror = (err) => {
+      log(`❌ ${kind} error: ${err?.message || err}`);
+    };
+
+    ws.onclose = (ev) => {
+      setStatus(statusEl, false, `断开(${ev.code})`);
+      log(`🔌 ${kind} disconnected. code=${ev.code} reason=${ev.reason || 'n/a'}`);
+      revokeURL(revokeIdx);
+      if (imgEl) imgEl.removeAttribute('src');
+      // 尝试重连
+      scheduleReconnect(kind, () => {
+        const ip = ipEl.value.trim();
+        if (!ip) return;
+        const urls = buildUrls(ip);
+        if (kind === 'cam0') connectCam('cam0', urls.cam0, imgCam0, stCam0, 0);
+        if (kind === 'cam1') connectCam('cam1', urls.cam1, imgCam1, stCam1, 1);
+      }, 1500);
+    };
+
+    return ws;
+  }
+
+  /*** Command connection ***/
+  function connectCmd(url){
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      log(`创建 cmd WebSocket 失败：${e}`);
+      return null;
+    }
+    ws.onopen = () => {
+      setStatus(stCmd, true);
+      log(`✅ cmd connected: ${url}`);
+      wsCmd = ws;
+    };
+    ws.onerror = (err) => {
+      log(`❌ cmd error: ${err?.message || err}`);
+    };
+    ws.onclose = (ev) => {
+      setStatus(stCmd, false, `断开(${ev.code})`);
+      log(`🔌 cmd disconnected. code=${ev.code} reason=${ev.reason || 'n/a'}`);
+      scheduleReconnect('cmd', () => {
+        const ip = ipEl.value.trim();
+        if (!ip) return;
+        const { cmd } = buildUrls(ip);
+        connectCmd(cmd);
+      }, 1500);
+    };
+    return ws;
+  }
+
+  function sendCmd(payload) {
+    if (!wsCmd || wsCmd.readyState !== WebSocket.OPEN) {
+      log('cmd 尚未连接，无法发送指令。');
+      return;
+    }
+    try {
+      const text = JSON.stringify(payload);
+      wsCmd.send(text);
+      log(`➡ cmd: ${text}`);
+    } catch (e) {
+      log(`cmd 发送失败: ${e}`);
+    }
+  }
+
+  /*** UI bindings ***/
+  btnConnect.addEventListener('click', () => {
+    if (connecting) return;
+    const ip = ipEl.value.trim();
+    if (!ip) {
+      log('请先填写 Robot IP');
+      ipEl.focus();
+      return;
+    }
+    connecting = true;
+    btnConnect.disabled = true;
+    btnDisconnect.disabled = false;
+
+    const { cam0, cam1, cmd } = buildUrls(ip);
+    connectCam('cam0', cam0, imgCam0, stCam0, 0);
+    connectCam('cam1', cam1, imgCam1, stCam1, 1);
+    connectCmd(cmd);
+
+    setTimeout(() => { connecting = false; }, 500);
+  });
+
+  btnDisconnect.addEventListener('click', () => {
+    btnConnect.disabled = false;
+    btnDisconnect.disabled = true;
+
+    // 清理重连计时器
+    for (const k of Object.keys(reconnectTimers)) {
+      if (reconnectTimers[k]) {
+        clearTimeout(reconnectTimers[k]);
+        reconnectTimers[k] = null;
+      }
+    }
+    try { wsCam0 && wsCam0.close(1000, 'client close'); } catch {}
+    try { wsCam1 && wsCam1.close(1000, 'client close'); } catch {}
+    try { wsCmd && wsCmd.close(1000, 'client close'); } catch {}
+
+    wsCam0 = wsCam1 = wsCmd = null;
+    setStatus(stCam0, false);
+    setStatus(stCam1, false);
+    setStatus(stCmd,  false);
+    revokeURL(0); revokeURL(1);
+    imgCam0.removeAttribute('src');
+    imgCam1.removeAttribute('src');
+  });
+
+  // 控制按钮（发送 action）
+  btnUp.addEventListener('click',    () => sendCmd({ action: 'forward' }));
+  btnDown.addEventListener('click',  () => sendCmd({ action: 'backward' }));
+  btnLeft.addEventListener('click',  () => sendCmd({ action: 'left' }));
+  btnRight.addEventListener('click', () => sendCmd({ action: 'right' }));
+  btnStop.addEventListener('click',  () => sendCmd({ action: 'stop' }));
+  btnLinAng.addEventListener('click',() => sendCmd({ linear: 0.3, angular: -0.2 }));
+
+  // 键盘快捷键
+  window.addEventListener('keydown', (ev) => {
+    switch (ev.key) {
+      case 'ArrowUp':    ev.preventDefault(); return sendCmd({ action: 'forward' });
+      case 'ArrowDown':  ev.preventDefault(); return sendCmd({ action: 'backward' });
+      case 'ArrowLeft':  ev.preventDefault(); return sendCmd({ action: 'left' });
+      case 'ArrowRight': ev.preventDefault(); return sendCmd({ action: 'right' });
+      case ' ':          ev.preventDefault(); return sendCmd({ action: 'stop' });
+    }
+  });
+
+  // 页面关闭时清理
+  window.addEventListener('beforeunload', () => {
+    try { wsCam0 && wsCam0.close(1000, 'bye'); } catch {}
+    try { wsCam1 && wsCam1.close(1000, 'bye'); } catch {}
+    try { wsCmd  && wsCmd.close(1000, 'bye'); } catch {}
+    revokeURL(0); revokeURL(1);
+  });
+})();
+</script>
+</body>
+</html>
+``
