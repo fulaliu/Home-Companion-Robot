@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <!-- ======================= Main Tree ======================= -->
+  <BehaviorTree ID="MainTree">
+    <Sequence name="InitAndRun">
+      <ReactiveFallback name="RootWithCharging">
+
+        <Parallel name="SupervisedTasks">
+
+          <ReactiveFallback name="CommandsSelector">
+            <Sequence name="CruiseWhenCommandsYes">
+              <Condition ID="CommandsIsYes" commands="{commands}" expected="{expected}"/>
+
+              <!-- Keep the whole parallel block forced-success to avoid bubbling failures -->
+              <Decorator ID="ForceSuccess" name="CruiseBlock_ForceSuccess">
+                <!-- Parallel without any ports (default semantics: all-success / any-failure) -->
+                <Parallel name="CruisePlusFall">
+
+                  <!-- AutoCruise: A->B->C->D, strict order -->
+                  <SubTree ID="AutoCruise"
+                           battery_threshold="{battery_threshold}"
+                           battery_pct="{battery_pct}"
+                           goal_A="{goal_A}" goal_B="{goal_B}" goal_C="{goal_C}" goal_D="{goal_D}"/>
+
+                  <!-- FallDetection: continuous monitoring; failures do not propagate -->
+                  <Decorator ID="ForceSuccess" name="FallDetection_ForceSuccess">
+                    <SubTree ID="FallDetection"
+                             battery_threshold="{battery_threshold}"
+                             battery_pct="{battery_pct}"/>
+                  </Decorator>
+
+                </Parallel>
+              </Decorator>
+            </Sequence>
+
+            <!-- Commands switched: fallback into transport task -->
+            <SubTree ID="TransportTask"
+                     battery_threshold="{battery_threshold}"
+                     battery_pct="{battery_pct}"
+                     goal_A="{goal_A}" goal_B="{goal_B}"/>
+          </ReactiveFallback>
+
+          <!-- Battery supervisor -->
+          <BatteryOK name="BatterySupervisor"
+                     threshold="{battery_threshold}" battery_pct="{battery_pct}"/>
+        </Parallel>
+
+        <DockAndCharge name="DockAndCharge"
+                       dock_pose="{dock}" resume_threshold="{resume_threshold}" timeout_sec="3600"/>
+      </ReactiveFallback>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ======================= AutoCruise ======================= -->
+  <BehaviorTree ID="AutoCruise">
+    <!-- If your build lacks SequenceWithMemory, replace this tag with <Sequence> -->
+    <SequenceWithMemory name="AutoCruiseSeq">
+      <BatteryOK name="BatteryCheck"
+                 threshold="{battery_threshold}" battery_pct="{battery_pct}"/>
+      <SendNav2Goal goal="{goal_A}" frame_id="map"/>
+        <RetryUntilSuccessful num_attempts="-1">
+        <CheckNav2Success/>
+      </RetryUntilSuccessful>
+      <SendNav2Goal goal="{goal_B}" frame_id="map"/>
+        <RetryUntilSuccessful num_attempts="-1">
+        <CheckNav2Success/>
+      </RetryUntilSuccessful>
+      <SendNav2Goal goal="{goal_C}" frame_id="map"/>
+        <RetryUntilSuccessful num_attempts="-1">
+        <CheckNav2Success/>
+      </RetryUntilSuccessful>
+      <SendNav2Goal goal="{goal_D}" frame_id="map"/>
+        <RetryUntilSuccessful num_attempts="-1">
+        <CheckNav2Success/>
+      </RetryUntilSuccessful>
+    </SequenceWithMemory>
+  </BehaviorTree>
+
+  <!-- ======================= FallDetection ======================= -->
+  <BehaviorTree ID="FallDetection">
+    <Sequence name="FallDetectionSeq">
+      <BatteryOK name="BatteryCheck_FD"
+                 threshold="{battery_threshold}" battery_pct="{battery_pct}"/>
+      <DetectFall name="FallDetect"/>
+      <TTS name="TTS_Alert" text="Detected a fall, please be careful"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- ======================= TransportTask ======================= -->
+  <BehaviorTree ID="TransportTask">
+    <Sequence name="TransportTaskSeq">
+
+
+      <WaitSeconds name="Wait60s_A" seconds="3"/>
+
+
+      <WaitSeconds name="Wait60s_B" seconds="3"/>
+    </Sequence>
+  </BehaviorTree>
+
+</root>
+

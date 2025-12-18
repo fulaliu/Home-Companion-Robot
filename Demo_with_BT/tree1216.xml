@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+
+    <!-- root: Reactive Selector -->
+    <ReactiveFallback name="root">
+
+      <!-- Branch 1: 低电优先 -->
+      <ReactiveSequence name="lowpower_sequence">
+        <!-- 条件：电量低 -> SUCCESS，否则 FAILURE -->
+        <Inverter name="NotBatteryOK">
+            <BatteryOK name="BatteryCheck"
+                 threshold="{battery_threshold}" battery_pct="{battery_pct}"/>
+        </Inverter>
+        <TTS name="TTS_Alert" text="Low power, Go to dock and charge now"/>
+        <!-- 动作：泊车充电（异步 RUNNING/成功/失败） -->  
+        <DockAndCharge name="dock_and_charge"
+                 action_name="/cmd"
+                 command="5"
+                 timeout_ms="30000"/>
+      </ReactiveSequence>
+
+      <!-- Branch 2: 指令分发（先把 /command 写入黑板 {command}） -->
+      <ReactiveSequence name="command_prepare">
+        <!-- 将最新 /command 写到黑板 {command} （字符串形式） -->
+        <ReadCommand name="read_cmd" cmd_out="{command}"/>
+        <!-- Switch2: case_1=0, case_2=1, 最后一个子为 default -->
+        <Switch3 name="command_switch" variable="{command}" case_1="0" case_2="1" case_3="2">
+
+          <!-- case 0：ReactiveFallback（摔倒告警 OR 导航 ABCD） -->
+          <ReactiveFallback name="case0_reactive">
+            <Sequence>
+              <DetectFall name="FallDetect"/>
+              <TTS name="TTS_Alert" text="Detected a fall, please be careful"/>
+              <SetCommand name="set_idle"
+              value="2"
+              topic="/command_control"
+              command="{command}"/>
+            </Sequence>
+	    <SequenceWithMemory name="nav_seq_A_B_C_D">
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_A}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+              </RetryUntilSuccessful>
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_B}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+              </RetryUntilSuccessful>
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_C}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+              </RetryUntilSuccessful>
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_D}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+              </RetryUntilSuccessful>
+            </SequenceWithMemory>
+          </ReactiveFallback>
+
+          <!-- case 1：SequenceWithMemory（导航 AB） -->
+          <SequenceWithMemory name="nav_seq_C_D">
+             <RelocateMapping name="relocate" service_name="/amr_mapping" cmd="1" timeout_ms="15000"/>	  
+	     <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_C}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+	      </RetryUntilSuccessful>
+              <WaitSeconds name="Wait" seconds="3"/>
+              <RetryUntilSuccessful num_attempts="-1">
+                <Sequence>
+                <SendNav2Goal goal="{goal_D}" frame_id="map"/>
+                <CheckNav2Success/>
+                </Sequence>
+              </RetryUntilSuccessful>
+              <SetCommand name="set_idle"
+              value="2"
+              topic="/command_control"
+              command="{command}"/>
+         </SequenceWithMemory>
+
+
+          <!-- case 2：idle 分支（示例为打印+保持成功返回） -->
+          <Sequence name="idle_sequence">
+            <TTS name="tts_idle" text="Entering idle"/>
+          <!-- 如需空转等待，可加 RateController/Delay；或简单 SUCCESS 即可 -->
+          <!-- 例如：<Delay msec="500"/> （若你的库有 Delay 装饰器） -->
+          </Sequence>
+
+          <!-- default：错误命令 TTS -->
+          <TTS name="tts_error" text="error command"/>
+        </Switch3>
+      </ReactiveSequence>
+
+      <!-- Branch 3: 空闲态（最低优先级） -->
+      <Sequence name="idle_sequence">
+        <TTS name="tts_idle" text="idle"/>
+      </Sequence>
+    </ReactiveFallback>
+
+   </BehaviorTree>
+</root>
+

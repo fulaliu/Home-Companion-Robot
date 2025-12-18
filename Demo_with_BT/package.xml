@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<package format="3">
+  <!-- 基本信息 -->
+  <name>home_demo</name>
+  <version>0.1.0</version>
+  <description>
+    BehaviorTree.CPP + Nav2 集成示例：包含 BatteryOK 与 NavigateTo 两个自定义节点。
+  </description>
+
+  <!-- 维护者与许可证：请按需替换 -->
+  <maintainer email="fulan@example.com">Fulan Liu</maintainer>
+  <license>BSD-3-Clause</license>
+  <author email="dev@example.com">Home Demo Authors</author>
+
+  <!-- 构建系统 -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- 运行/编译依赖（使用 <depend> 同时覆盖 build/exec/export） -->
+  <!-- ROS 2 客户端库 -->
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+
+  <!-- 消息/动作接口（PoseStamped、NavigateToPose 等） -->
+  <depend>geometry_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>sensor_msgs</depend>
+
+  <!-- 行为树库（ROS 打包版 v3） -->
+  <depend>behaviortree_cpp_v3</depend>
+
+  <!--（可选）测试/规范依赖 -->
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>gtest</test_depend>
+
+  <!-- 导出：指定构建类型为 ament_cmake -->
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+

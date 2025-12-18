@@ -1,0 +1,38 @@
+<root BTCPP_format="4">
+    <TreeNodesModel>
+        <Action ID="BatteryOK">
+            <input_port name="battery_pct" type="double"/>
+            <input_port name="threshold" type="double"/>
+        </Action>
+        <Action ID="CheckNav2Success"/>
+        <Condition ID="DetectFall"/>
+        <Action ID="DockAndCharge">
+            <input_port name="timeout_ms" type="int" default="30000">overall timeout in milliseconds</input_port>
+            <input_port name="command" type="int" default="5">Cmd.goal.command</input_port>
+            <input_port name="action_name" type="std::string" default="/cmd">ROS2 action name</input_port>
+        </Action>
+        <Action ID="ReadCommand">
+            <output_port name="cmd_out" type="std::string">command to BB as string</output_port>
+        </Action>
+        <Action ID="RelocateMapping">
+            <input_port name="timeout_ms" type="int" default="15000">overall timeout in milliseconds</input_port>
+            <input_port name="cmd" type="int" default="1">Mapping request cmd</input_port>
+            <input_port name="service_name" type="std::string" default="/amr_mapping">ROS2 service name for Mapping</input_port>
+        </Action>
+        <Action ID="SendNav2Goal">
+            <input_port name="frame_id" type="std::string">map</input_port>
+            <input_port name="goal" type="std::string">x,y,yaw_deg</input_port>
+        </Action>
+        <Action ID="SetCommand">
+            <output_port name="command" type="std::string">blackboard command</output_port>
+            <input_port name="topic" type="std::string" default="/command_control">ROS2 topic to publish</input_port>
+            <input_port name="value" type="std::string" default="2">command value to write</input_port>
+        </Action>
+        <Action ID="TTS">
+            <input_port name="text" type="std::string"/>
+        </Action>
+        <Action ID="WaitSeconds">
+            <input_port name="seconds" type="int" default="60">Time to wait in seconds</input_port>
+        </Action>
+    </TreeNodesModel>
+</root>
